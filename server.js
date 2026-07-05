@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
@@ -52,7 +53,23 @@ CREATE TABLE IF NOT EXISTS likes (
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(user_id, movie_id)
 );
+CREATE TABLE IF NOT EXISTS lists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'ranked' CHECK (kind IN ('ranked', 'random')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS list_items (
+  list_id INTEGER NOT NULL REFERENCES lists(id),
+  movie_id INTEGER NOT NULL REFERENCES movies(id),
+  position INTEGER NOT NULL,
+  UNIQUE(list_id, movie_id)
+);
 `);
+
+const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userCols.includes('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT');
 
 const movieCols = db.prepare('PRAGMA table_info(movies)').all().map(c => c.name);
 [
@@ -63,7 +80,11 @@ const movieCols = db.prepare('PRAGMA table_info(movies)').all().map(c => c.name)
   ['runtime', 'runtime INTEGER'],
   ['cast_json', 'cast_json TEXT'],
   ['providers_json', 'providers_json TEXT'],
-  ['details_at', 'details_at TEXT']
+  ['details_at', 'details_at TEXT'],
+  ['vote_average', 'vote_average REAL'],
+  ['vote_count', 'vote_count INTEGER'],
+  ['imdb_id', 'imdb_id TEXT'],
+  ['scores_json', 'scores_json TEXT']
 ].forEach(([name, ddl]) => {
   if (!movieCols.includes(name)) db.exec(`ALTER TABLE movies ADD COLUMN ${ddl}`);
 });
@@ -115,7 +136,9 @@ const tmdbMovie = r => ({
   poster_url: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null,
   backdrop_url: r.backdrop_path ? `https://image.tmdb.org/t/p/w780${r.backdrop_path}` : null,
   tmdb_id: r.id,
-  popularity: r.popularity || null
+  popularity: r.popularity || null,
+  vote_average: r.vote_average || null,
+  vote_count: r.vote_count || null
 });
 
 async function searchProvider(q) {
@@ -152,8 +175,8 @@ async function importPopular() {
     genreMap = Object.fromEntries((await tmdb('/genre/movie/list')).genres.map(g => [g.id, g.name]));
   } catch (e) { /* genres stay blank */ }
   const insert = db.prepare(`
-    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, vote_average, vote_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (let page = 1; page <= 5; page++) {
     const data = await tmdb(`/movie/popular?page=${page}`);
@@ -165,14 +188,15 @@ async function importPopular() {
       ).get(m.title, m.year);
       if (existing) {
         db.prepare(`
-          UPDATE movies SET tmdb_id = ?, popularity = ?,
+          UPDATE movies SET tmdb_id = ?, popularity = ?, vote_average = ?, vote_count = ?,
             poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?)
           WHERE id = ?
-        `).run(m.tmdb_id, m.popularity, m.poster_url, m.backdrop_url, existing.id);
+        `).run(m.tmdb_id, m.popularity, m.vote_average, m.vote_count, m.poster_url, m.backdrop_url, existing.id);
         continue;
       }
       const genre = (r.genre_ids || []).slice(0, 2).map(i => genreMap[i]).filter(Boolean).join(' · ');
-      insert.run(m.title, m.year, genre, m.description, m.poster_url, m.backdrop_url, m.tmdb_id, m.popularity);
+      insert.run(m.title, m.year, genre, m.description, m.poster_url, m.backdrop_url,
+        m.tmdb_id, m.popularity, m.vote_average, m.vote_count);
     }
   }
 }
@@ -182,7 +206,7 @@ async function importPopular() {
 async function enrichCatalog() {
   const missing = db.prepare(`
     SELECT id, title, year FROM movies
-    WHERE poster_url IS NULL OR backdrop_url IS NULL OR tmdb_id IS NULL
+    WHERE poster_url IS NULL OR backdrop_url IS NULL OR tmdb_id IS NULL OR vote_average IS NULL
   `).all();
   for (const m of missing) {
     try {
@@ -191,9 +215,11 @@ async function enrichCatalog() {
         || results.find(r => r.poster_url);
       if (best) db.prepare(`
         UPDATE movies SET poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?),
-          tmdb_id = COALESCE(tmdb_id, ?), popularity = COALESCE(popularity, ?)
+          tmdb_id = COALESCE(tmdb_id, ?), popularity = COALESCE(popularity, ?),
+          vote_average = COALESCE(vote_average, ?), vote_count = COALESCE(vote_count, ?)
         WHERE id = ?
-      `).run(best.poster_url, best.backdrop_url, best.tmdb_id || null, best.popularity || null, m.id);
+      `).run(best.poster_url, best.backdrop_url, best.tmdb_id || null, best.popularity || null,
+        best.vote_average || null, best.vote_count || null, m.id);
     } catch (e) { /* offline or rate limited — existing art or placeholder stays */ }
   }
 }
@@ -203,8 +229,11 @@ async function enrichCatalog() {
   await enrichCatalog();
 })();
 
+const uploadsDir = path.join(__dirname, 'public', 'uploads');
+fs.mkdirSync(uploadsDir, { recursive: true });
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '4mb' })); // roomy enough for base64 avatar uploads
 app.use(cookieSession({
   name: 'moviqe',
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me-in-production',
@@ -222,6 +251,7 @@ function requireAuth(req, res, next) {
 const publicUser = u => ({
   id: u.id, username: u.username, bio: u.bio,
   bg_color: u.bg_color, accent_color: u.accent_color, avatar_color: u.avatar_color,
+  avatar_url: u.avatar_url || null,
   created_at: u.created_at
 });
 
@@ -237,8 +267,10 @@ app.post('/api/register', (req, res) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
   try {
-    const info = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)')
-      .run(username, bcrypt.hashSync(password, 10));
+    const info = db.prepare(`
+      INSERT INTO users (username, password_hash, bg_color, accent_color, avatar_color)
+      VALUES (?, ?, '#12121a', '#f4c245', '#3d6be8')
+    `).run(username, bcrypt.hashSync(password, 10));
     req.session.userId = info.lastInsertRowid;
     res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
   } catch (e) {
@@ -282,6 +314,20 @@ app.put('/api/profile', requireAuth, (req, res) => {
   res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId)));
 });
 
+// Profile picture upload: JSON body { image: "data:image/png;base64,..." }
+app.post('/api/profile/avatar', requireAuth, (req, res) => {
+  const m = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec((req.body || {}).image || '');
+  if (!m) return res.status(400).json({ error: 'Send a PNG, JPEG or WebP image' });
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 3 * 1024 * 1024) return res.status(400).json({ error: 'Image too large (max 3MB)' });
+  const old = db.prepare('SELECT avatar_url FROM users WHERE id = ?').get(req.session.userId).avatar_url;
+  const file = `av_${req.session.userId}_${Date.now()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`;
+  fs.writeFileSync(path.join(uploadsDir, file), buf);
+  db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run('/uploads/' + file, req.session.userId);
+  if (old) fs.unlink(path.join(uploadsDir, path.basename(old)), () => {});
+  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId)));
+});
+
 app.get('/api/my-profile', requireAuth, (req, res) => {
   const uid = req.session.userId;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
@@ -300,7 +346,96 @@ app.get('/api/my-profile', requireAuth, (req, res) => {
     FROM reviews r JOIN movies m ON m.id = r.movie_id
     WHERE r.user_id = ? ORDER BY r.created_at DESC
   `).all(uid);
-  res.json({ user: publicUser(user), stats, favorites, reviewed });
+  const lists = db.prepare('SELECT * FROM lists WHERE user_id = ? ORDER BY id DESC').all(uid).map(l => ({
+    ...l,
+    count: db.prepare('SELECT COUNT(*) AS n FROM list_items WHERE list_id = ?').get(l.id).n,
+    posters: db.prepare(`
+      SELECT m.poster_url, m.backdrop_url, m.id FROM list_items li
+      JOIN movies m ON m.id = li.movie_id
+      WHERE li.list_id = ? ORDER BY li.position LIMIT 3
+    `).all(l.id)
+  }));
+  res.json({ user: publicUser(user), stats, favorites, reviewed, lists });
+});
+
+// ---- Lists (ranked or random, shown on the profile) ----
+function getList(id, uid) {
+  const list = db.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(id, uid);
+  if (!list) return null;
+  list.items = db.prepare(`
+    SELECT li.position, m.id, m.title, m.year, m.poster_url, m.backdrop_url, r.stars
+    FROM list_items li JOIN movies m ON m.id = li.movie_id
+    LEFT JOIN reviews r ON r.movie_id = m.id AND r.user_id = ?
+    WHERE li.list_id = ? ORDER BY li.position
+  `).all(uid, id);
+  return list;
+}
+
+app.post('/api/lists', requireAuth, (req, res) => {
+  const { title, kind } = req.body || {};
+  if (!title || !title.trim()) return res.status(400).json({ error: 'List name is required' });
+  const k = kind === 'random' ? 'random' : 'ranked';
+  const info = db.prepare('INSERT INTO lists (user_id, title, kind) VALUES (?, ?, ?)')
+    .run(req.session.userId, title.trim().slice(0, 100), k);
+  if (k === 'random') {
+    const add = db.prepare('INSERT INTO list_items (list_id, movie_id, position) VALUES (?, ?, ?)');
+    db.prepare('SELECT id FROM movies ORDER BY RANDOM() LIMIT 10').all()
+      .forEach((p, i) => add.run(info.lastInsertRowid, p.id, i + 1));
+  }
+  res.json(getList(info.lastInsertRowid, req.session.userId));
+});
+
+app.get('/api/lists/:id', requireAuth, (req, res) => {
+  const list = getList(req.params.id, req.session.userId);
+  if (!list) return res.status(404).json({ error: 'List not found' });
+  res.json(list);
+});
+
+app.delete('/api/lists/:id', requireAuth, (req, res) => {
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(req.params.id, req.session.userId);
+  if (!list) return res.status(404).json({ error: 'List not found' });
+  db.prepare('DELETE FROM list_items WHERE list_id = ?').run(list.id);
+  db.prepare('DELETE FROM lists WHERE id = ?').run(list.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/lists/:id/items', requireAuth, (req, res) => {
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(req.params.id, req.session.userId);
+  if (!list) return res.status(404).json({ error: 'List not found' });
+  const movieId = parseInt((req.body || {}).movie_id);
+  if (!db.prepare('SELECT id FROM movies WHERE id = ?').get(movieId)) {
+    return res.status(404).json({ error: 'Movie not found' });
+  }
+  try {
+    const next = db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM list_items WHERE list_id = ?').get(list.id).p;
+    db.prepare('INSERT INTO list_items (list_id, movie_id, position) VALUES (?, ?, ?)').run(list.id, movieId, next);
+  } catch (e) {
+    return res.status(409).json({ error: 'That movie is already in the list' });
+  }
+  res.json(getList(list.id, req.session.userId));
+});
+
+app.delete('/api/lists/:id/items/:movieId', requireAuth, (req, res) => {
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(req.params.id, req.session.userId);
+  if (!list) return res.status(404).json({ error: 'List not found' });
+  db.prepare('DELETE FROM list_items WHERE list_id = ? AND movie_id = ?').run(list.id, req.params.movieId);
+  res.json(getList(list.id, req.session.userId));
+});
+
+// Move an item up/down in a ranked list: { movie_id, dir: 'up' | 'down' }
+app.post('/api/lists/:id/move', requireAuth, (req, res) => {
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(req.params.id, req.session.userId);
+  if (!list) return res.status(404).json({ error: 'List not found' });
+  const { movie_id, dir } = req.body || {};
+  const items = db.prepare('SELECT movie_id, position FROM list_items WHERE list_id = ? ORDER BY position').all(list.id);
+  const i = items.findIndex(x => x.movie_id === parseInt(movie_id));
+  const j = dir === 'up' ? i - 1 : i + 1;
+  if (i >= 0 && j >= 0 && j < items.length) {
+    const swap = db.prepare('UPDATE list_items SET position = ? WHERE list_id = ? AND movie_id = ?');
+    swap.run(items[j].position, list.id, items[i].movie_id);
+    swap.run(items[i].position, list.id, items[j].movie_id);
+  }
+  res.json(getList(list.id, req.session.userId));
 });
 
 // ---- Movie search (external provider) ----
@@ -348,10 +483,27 @@ async function fetchDetails(movie) {
   } : null;
   const cast = ((d.credits && d.credits.cast) || []).slice(0, 8)
     .map(c => ({ name: c.name, character: c.character || '' }));
+  // External audience scores: OMDb (free key) carries IMDb + Rotten Tomatoes.
+  // Without a key the UI still shows the TMDB score and a link to IMDb.
+  let scores = null;
+  const imdbId = d.imdb_id || '';
+  if (process.env.OMDB_API_KEY && imdbId) {
+    try {
+      const o = await (await fetch(`https://www.omdbapi.com/?apikey=${process.env.OMDB_API_KEY}&i=${imdbId}`)).json();
+      const rating = src => ((o.Ratings || []).find(r => r.Source === src) || {}).Value || null;
+      scores = {
+        imdb: (o.imdbRating && o.imdbRating !== 'N/A') ? o.imdbRating : null,
+        rt: rating('Rotten Tomatoes'),
+        metacritic: rating('Metacritic')
+      };
+    } catch (e) { /* scores stay null; retried when details refresh */ }
+  }
   db.prepare(`
     UPDATE movies SET runtime = ?, genre = COALESCE(NULLIF(genre, ''), ?),
       description = COALESCE(NULLIF(description, ''), ?),
-      cast_json = ?, providers_json = ?, details_at = datetime('now')
+      cast_json = ?, providers_json = ?, imdb_id = ?, scores_json = ?,
+      vote_average = COALESCE(?, vote_average), vote_count = COALESCE(?, vote_count),
+      details_at = datetime('now')
     WHERE id = ?
   `).run(
     d.runtime || null,
@@ -359,6 +511,10 @@ async function fetchDetails(movie) {
     d.overview || '',
     JSON.stringify(cast),
     providers ? JSON.stringify(providers) : null,
+    imdbId,
+    scores ? JSON.stringify(scores) : null,
+    d.vote_average || null,
+    d.vote_count || null,
     movie.id
   );
 }
@@ -374,7 +530,8 @@ app.get('/api/movies/:id', async (req, res) => {
   `).get(uid, req.params.id);
   let movie = getMovie();
   if (!movie) return res.status(404).json({ error: 'Movie not found' });
-  if (movie.tmdb_id && !movie.details_at && tmdbEnabled()) {
+  // imdb_id === null means details predate the scores feature — refresh once
+  if (movie.tmdb_id && tmdbEnabled() && (!movie.details_at || movie.imdb_id === null)) {
     try {
       await fetchDetails(movie);
       movie = getMovie();
@@ -382,10 +539,12 @@ app.get('/api/movies/:id', async (req, res) => {
   }
   movie.cast = movie.cast_json ? JSON.parse(movie.cast_json) : [];
   movie.providers = movie.providers_json ? JSON.parse(movie.providers_json) : null;
+  movie.scores = movie.scores_json ? JSON.parse(movie.scores_json) : null;
   delete movie.cast_json;
   delete movie.providers_json;
+  delete movie.scores_json;
   movie.reviews = db.prepare(`
-    SELECT r.id, r.stars, r.text, r.created_at, u.username, u.avatar_color, r.user_id
+    SELECT r.id, r.stars, r.text, r.created_at, u.username, u.avatar_color, u.avatar_url, r.user_id
     FROM reviews r JOIN users u ON u.id = r.user_id
     WHERE r.movie_id = ? ORDER BY r.created_at DESC
   `).all(req.params.id);
@@ -393,7 +552,7 @@ app.get('/api/movies/:id', async (req, res) => {
 });
 
 app.post('/api/movies', requireAuth, (req, res) => {
-  const { title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity } = req.body || {};
+  const { title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, vote_average, vote_count } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title is required' });
   const t = title.trim().slice(0, 200);
   const y = parseInt(year) || null;
@@ -401,11 +560,12 @@ app.post('/api/movies', requireAuth, (req, res) => {
     || (parseInt(tmdb_id) ? db.prepare('SELECT id FROM movies WHERE tmdb_id = ?').get(parseInt(tmdb_id)) : null);
   if (dupe) return res.status(409).json({ error: 'That movie is already in the catalog' });
   const info = db.prepare(`
-    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, added_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, vote_average, vote_count, added_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t, y, (genre || '').slice(0, 50), (description || '').slice(0, 1000),
     httpsUrl(poster_url), httpsUrl(backdrop_url),
-    parseInt(tmdb_id) || null, parseFloat(popularity) || null, req.session.userId);
+    parseInt(tmdb_id) || null, parseFloat(popularity) || null,
+    parseFloat(vote_average) || null, parseInt(vote_count) || null, req.session.userId);
   res.json(db.prepare('SELECT * FROM movies WHERE id = ?').get(info.lastInsertRowid));
 });
 

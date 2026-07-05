@@ -4,6 +4,7 @@ let me = null;
 let currentStars = 0;
 let profileData = null;
 let profileGridMode = 'favorites';
+let currentList = null;
 
 // ---- API helper ----
 async function api(path, opts = {}) {
@@ -45,6 +46,14 @@ function fallbackBanner(id) {
 function bannerStyle(m) {
   const img = m.backdrop_url || m.poster_url;
   return img ? `background-image:url('${encodeURI(img)}')` : `background-image:${fallbackBanner(m.id)}`;
+}
+
+// Avatar: uploaded photo if present, otherwise colored initial
+function avatarHtml(user, cls = '') {
+  if (user.avatar_url) {
+    return `<img class="avatar ${cls}" src="${encodeURI(user.avatar_url)}" alt="">`;
+  }
+  return `<div class="avatar ${cls}" style="background:${escapeHtml(user.avatar_color)}">${escapeHtml((user.username || '?')[0].toUpperCase())}</div>`;
 }
 
 // ---- Theme ----
@@ -103,7 +112,7 @@ function renderMovieGrid() {
         </div>
       </div>
     </div>
-  `).join('') : '<div class="grid-empty">No movies match your filter.</div>';
+  `).join('') : '<div class="grid-empty">No movies match your search.</div>';
   document.querySelectorAll('.movie-card').forEach(c =>
     c.addEventListener('click', () => openMovie(c.dataset.id)));
 }
@@ -115,8 +124,25 @@ async function loadMovies() {
 
 $('#movie-filter').addEventListener('input', renderMovieGrid);
 
+// ---- Movie detail ----
 function fmtRuntime(mins) {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+}
+
+function scoreBadges(m) {
+  const badges = [];
+  if (m.vote_average) {
+    badges.push(`<span class="score-badge tmdb" title="${m.vote_count || 0} votes on TMDB">TMDB ${m.vote_average.toFixed(1)}</span>`);
+  }
+  if (m.scores && m.scores.imdb) {
+    badges.push(`<span class="score-badge imdb">IMDb ${escapeHtml(m.scores.imdb)}</span>`);
+  } else if (m.imdb_id) {
+    badges.push(`<a class="score-badge imdb" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener">IMDb ↗</a>`);
+  }
+  if (m.scores && m.scores.rt) {
+    badges.push(`<span class="score-badge rt">🍅 ${escapeHtml(m.scores.rt)}</span>`);
+  }
+  return badges.join('');
 }
 
 function providersHtml(p) {
@@ -153,32 +179,44 @@ async function openMovie(id) {
         <button id="like-btn" class="like-btn ${m.liked ? 'liked' : ''}">
           ${m.liked ? '♥ In favorites' : '♡ Add to favorites'} · <span id="like-count">${m.like_count}</span>
         </button>
+        ${scoreBadges(m)}
       </div>
       <p>${escapeHtml(m.description || '')}</p>
-      ${m.cast.length ? `
-        <h4>Cast</h4>
-        <div class="cast-list">
-          ${m.cast.map(c => `<span class="chip"><strong>${escapeHtml(c.name)}</strong>${c.character ? ` · ${escapeHtml(c.character)}` : ''}</span>`).join('')}
-        </div>` : ''}
-      <h4>Where to watch</h4>
-      ${providersHtml(m.providers)}
-      <h4>${mine ? 'Update your review' : 'Your review'}</h4>
-      <div class="star-input" id="star-input">
-        ${[1, 2, 3, 4, 5].map(i => `<span data-v="${i}">★</span>`).join('')}
-      </div>
-      <form id="review-form" style="margin-top:0.8rem">
-        <textarea id="review-text" rows="3" placeholder="Write your review (optional)">${escapeHtml(mine ? mine.text : '')}</textarea>
-        <div class="review-form-actions">
-          <button type="submit" class="primary">${mine ? 'Update review' : 'Post review'}</button>
-          <button type="button" class="export-btn" id="detail-export">Export to social media</button>
+
+      <div class="review-card">
+        <h4>${mine ? 'Update your review' : 'Rate & review'}</h4>
+        <div class="star-input" id="star-input">
+          ${[1, 2, 3, 4, 5].map(i => `<span data-v="${i}">★</span>`).join('')}
         </div>
-      </form>
-      <h4 style="margin-top:1.5rem">Reviews</h4>
+        <form id="review-form">
+          <textarea id="review-text" rows="3" placeholder="Write your review (optional)">${escapeHtml(mine ? mine.text : '')}</textarea>
+          <div class="review-form-actions">
+            <button type="submit" class="primary">${mine ? 'Update review' : 'Post review'}</button>
+            <button type="button" class="export-btn" id="detail-export">Export to social media</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="detail-cols">
+        <div>
+          <h4>Cast</h4>
+          ${m.cast.length ? `
+            <div class="cast-list">
+              ${m.cast.map(c => `<span class="chip"><strong>${escapeHtml(c.name)}</strong>${c.character ? ` · ${escapeHtml(c.character)}` : ''}</span>`).join('')}
+            </div>` : '<p class="muted">No cast information.</p>'}
+        </div>
+        <div>
+          <h4>Where to watch</h4>
+          ${providersHtml(m.providers)}
+        </div>
+      </div>
+
+      <h4>Reviews</h4>
       <div id="movie-reviews">
         ${m.reviews.length ? m.reviews.map(r => `
           <div class="review-item">
             <div class="review-head">
-              <div class="avatar" style="background:${escapeHtml(r.avatar_color)}">${escapeHtml(r.username[0].toUpperCase())}</div>
+              ${avatarHtml(r, 'avatar-sm')}
               <strong>${escapeHtml(r.username)}</strong>
               <span class="stars-display">${starString(r.stars)}</span>
             </div>
@@ -258,8 +296,7 @@ async function loadProfile() {
   const { user, stats } = profileData;
   $('#profile-username').textContent = user.username;
   $('#profile-since').textContent = 'Member since ' + user.created_at.slice(0, 10);
-  $('#profile-avatar').textContent = user.username[0].toUpperCase();
-  $('#profile-avatar').style.background = user.avatar_color;
+  $('#profile-avatar-wrap').innerHTML = avatarHtml(user, 'avatar-xl');
   $('#profile-bio').textContent = user.bio || '';
   $('#stat-reviews').textContent = stats.review_count;
   $('#stat-favorites').textContent = stats.favorite_count;
@@ -268,11 +305,37 @@ async function loadProfile() {
 }
 
 function renderProfileGrid() {
+  const grid = $('#profile-grid');
+  if (profileGridMode === 'lists') {
+    grid.classList.add('as-lists');
+    grid.innerHTML = `
+      <button id="new-list-btn" class="list-card new">＋ New list</button>
+      ${profileData.lists.map(l => `
+        <div class="list-card" data-id="${l.id}">
+          <div class="list-posters">
+            ${l.posters.length
+              ? l.posters.map(p => `<span style="${bannerStyle(p)}"></span>`).join('')
+              : '<span class="empty-poster"></span>'}
+          </div>
+          <strong>${escapeHtml(l.title)}</strong>
+          <span class="muted">${l.kind === 'random' ? '🎲 random' : '🏆 ranked'} · ${l.count} movies</span>
+        </div>
+      `).join('')}
+    `;
+    $('#new-list-btn').addEventListener('click', () => {
+      $('#list-title').value = '';
+      $('#new-list-modal').classList.remove('hidden');
+    });
+    document.querySelectorAll('.list-card[data-id]').forEach(c =>
+      c.addEventListener('click', () => openList(c.dataset.id)));
+    return;
+  }
+  grid.classList.remove('as-lists');
   const items = profileGridMode === 'favorites' ? profileData.favorites : profileData.reviewed;
   const empty = profileGridMode === 'favorites'
     ? 'No favorites yet. Tap the heart on a movie you love.'
     : 'No reviews yet. Rate a movie from the Movies tab.';
-  $('#profile-grid').innerHTML = items.length ? items.map(m => `
+  grid.innerHTML = items.length ? items.map(m => `
     <div class="poster-tile" data-id="${m.id}" style="${bannerStyle(m)}">
       <div class="tile-label">
         <span>${escapeHtml(m.title)}</span>
@@ -291,13 +354,117 @@ document.querySelectorAll('.ig-tab').forEach(b =>
     renderProfileGrid();
   }));
 
-// Edit profile modal
+// ---- Lists ----
+$('#new-list-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const list = await api('/api/lists', {
+      method: 'POST',
+      body: { title: $('#list-title').value, kind: document.querySelector('input[name="list-kind"]:checked').value }
+    });
+    $('#new-list-modal').classList.add('hidden');
+    await loadProfile();
+    openList(list.id);
+  } catch (err) { toast(err.message); }
+});
+
+async function openList(id) {
+  currentList = await api('/api/lists/' + id);
+  renderListDetail();
+  $('#list-modal').classList.remove('hidden');
+}
+
+function renderListDetail() {
+  const l = currentList;
+  const inList = new Set(l.items.map(i => i.id));
+  const addable = allMovies.filter(m => !inList.has(m.id));
+  $('#list-detail').innerHTML = `
+    <div class="list-head">
+      <h3>${escapeHtml(l.title)}</h3>
+      <span class="muted">${l.kind === 'random' ? '🎲 random' : '🏆 ranked'} · ${l.items.length} movies</span>
+      <button id="delete-list" class="ghost-btn danger">Delete list</button>
+    </div>
+    ${l.items.length ? l.items.map((m, idx) => `
+      <div class="list-item">
+        <span class="rank-num">${idx + 1}</span>
+        <span class="review-thumb" style="${bannerStyle(m)}"></span>
+        <div class="li-info" data-open="${m.id}">
+          <strong>${escapeHtml(m.title)}</strong>
+          <span class="muted">${m.year || ''} ${m.stars ? '· your rating: ' + starString(m.stars) : '· not rated yet'}</span>
+        </div>
+        <div class="li-actions">
+          ${l.kind === 'ranked' ? `
+            <button class="mini-btn" data-move="up" data-movie="${m.id}" ${idx === 0 ? 'disabled' : ''}>▲</button>
+            <button class="mini-btn" data-move="down" data-movie="${m.id}" ${idx === l.items.length - 1 ? 'disabled' : ''}>▼</button>
+          ` : ''}
+          <button class="mini-btn" data-remove="${m.id}">✕</button>
+        </div>
+      </div>
+    `).join('') : '<p class="muted">Empty list — add movies below.</p>'}
+    ${l.kind === 'ranked' ? `
+      <div class="list-add">
+        <select id="list-add-select">
+          <option value="">Add a movie...</option>
+          ${addable.map(m => `<option value="${m.id}">${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''}</option>`).join('')}
+        </select>
+      </div>` : ''}
+  `;
+
+  $('#delete-list').addEventListener('click', async () => {
+    if (!confirm(`Delete the list "${l.title}"?`)) return;
+    await api('/api/lists/' + l.id, { method: 'DELETE' });
+    $('#list-modal').classList.add('hidden');
+    loadProfile();
+  });
+  document.querySelectorAll('#list-detail .li-info').forEach(el =>
+    el.addEventListener('click', () => {
+      $('#list-modal').classList.add('hidden');
+      openMovie(el.dataset.open);
+    }));
+  document.querySelectorAll('#list-detail [data-move]').forEach(b =>
+    b.addEventListener('click', async () => {
+      currentList = await api(`/api/lists/${l.id}/move`, { method: 'POST', body: { movie_id: +b.dataset.movie, dir: b.dataset.move } });
+      renderListDetail();
+    }));
+  document.querySelectorAll('#list-detail [data-remove]').forEach(b =>
+    b.addEventListener('click', async () => {
+      currentList = await api(`/api/lists/${l.id}/items/${b.dataset.remove}`, { method: 'DELETE' });
+      renderListDetail();
+    }));
+  const sel = $('#list-add-select');
+  if (sel) sel.addEventListener('change', async () => {
+    if (!sel.value) return;
+    try {
+      currentList = await api(`/api/lists/${l.id}/items`, { method: 'POST', body: { movie_id: +sel.value } });
+      renderListDetail();
+    } catch (err) { toast(err.message); }
+  });
+}
+
+// ---- Edit profile ----
 $('#edit-profile-btn').addEventListener('click', () => {
   $('#profile-bio-input').value = me.bio || '';
   $('#color-bg').value = me.bg_color;
   $('#color-accent').value = me.accent_color;
   $('#color-avatar').value = me.avatar_color;
+  $('#edit-avatar-preview').innerHTML = avatarHtml(me, 'avatar-lg');
   $('#edit-modal').classList.remove('hidden');
+});
+
+$('#avatar-file').addEventListener('change', () => {
+  const file = $('#avatar-file').files[0];
+  if (!file) return;
+  if (file.size > 3 * 1024 * 1024) return toast('Image too large (max 3MB)');
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      me = await api('/api/profile/avatar', { method: 'POST', body: { image: reader.result } });
+      $('#edit-avatar-preview').innerHTML = avatarHtml(me, 'avatar-lg');
+      toast('Profile photo updated');
+      if (profileData) loadProfile();
+    } catch (err) { toast(err.message); }
+  };
+  reader.readAsDataURL(file);
 });
 
 // Live preview while picking colors
@@ -307,7 +474,6 @@ $('#edit-profile-btn').addEventListener('click', () => {
     r.setProperty('--bg', $('#color-bg').value);
     r.setProperty('--accent', $('#color-accent').value);
     r.setProperty('--avatar', $('#color-avatar').value);
-    $('#profile-avatar').style.background = $('#color-avatar').value;
   });
 });
 
@@ -410,6 +576,11 @@ document.querySelectorAll('.modal-close').forEach(b =>
   b.addEventListener('click', () => $('#' + b.dataset.close).classList.add('hidden')));
 document.querySelectorAll('.modal').forEach(m =>
   m.addEventListener('click', e => { if (e.target === m) m.classList.add('hidden'); }));
+
+// ---- PWA ----
+if ('serviceWorker' in navigator && location.hostname !== 'localhost') {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 
 // ---- Boot ----
 (async () => {

@@ -4,3 +4,4 @@ moviqe.db-shm
 moviqe.db-wal
 .env
 .DS_Store
+public/uploads/

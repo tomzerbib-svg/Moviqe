@@ -16,7 +16,8 @@ npm start
 - **Backend:** Node.js + Express, SQLite (`better-sqlite3`) — one file (`moviqe.db`), zero external services
 - **Auth:** bcrypt password hashing + signed session cookies (`cookie-session`)
 - **Frontend:** vanilla HTML/CSS/JS in `public/`, no build step
-- **Movie data:** IMDb's public suggestion API by default (no key needed) — titles, years, poster art. Set the `TMDB_API_KEY` env var to switch to TMDB (free key from themoviedb.org) for richer plots, genres and widescreen banners. Both live in `searchProvider()` in `server.js`.
+- **Movie data:** TMDB via the `TMDB_TOKEN` env var (read access token in `.env`) — popular-movies catalog, banners, runtime, cast, watch providers (JustWatch data, region set by `WATCH_REGION`, default IL) and the TMDB audience score. Falls back to IMDb's public suggestion API without a token. Optional: set `OMDB_API_KEY` (free at omdbapi.com) to also show IMDb and Rotten Tomatoes scores.
+- **PWA:** `manifest.webmanifest` + `sw.js` make it installable on phones (Add to Home Screen). Bump the cache version in `sw.js` when deploying static-file changes.
 
 ## Things to swap later
 

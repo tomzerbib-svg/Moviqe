@@ -1,8 +1,6 @@
-<!-- PLACEHOLDER LOGO — replace this file with the B3 logo export when ready. Keep the filename logo.svg and nothing else needs to change. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-  <rect x="2" y="2" width="36" height="36" rx="9" fill="#e8b23a"/>
-  <circle cx="11" cy="10" r="2.2" fill="#12121a"/>
-  <circle cx="20" cy="10" r="2.2" fill="#12121a"/>
-  <circle cx="29" cy="10" r="2.2" fill="#12121a"/>
-  <text x="20" y="30" font-family="Georgia, serif" font-size="18" font-weight="bold" fill="#12121a" text-anchor="middle">M</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 156 100" width="156" height="100">
+  <!-- Moviqe chevrons: red, yellow, blue -->
+  <path fill="#D9482F" d="M0 0h24l30 50-30 50H0l30-50z"/>
+  <path fill="#F4C245" d="M51 0h24l30 50-30 50H51l30-50z"/>
+  <path fill="#3D6BE8" d="M102 0h24l30 50-30 50h-24l30-50z"/>
 </svg>

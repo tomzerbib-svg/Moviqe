@@ -1,0 +1,13 @@
+{
+  "name": "Moviqe",
+  "short_name": "Moviqe",
+  "description": "Rate movies, write reviews, make it yours.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12121a",
+  "theme_color": "#12121a",
+  "icons": [
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
