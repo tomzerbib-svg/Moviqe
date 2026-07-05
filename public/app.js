@@ -48,6 +48,12 @@ function bannerStyle(m) {
   return img ? `background-image:url('${encodeURI(img)}')` : `background-image:${fallbackBanner(m.id)}`;
 }
 
+// Portrait art for poster-shaped cards (grid); banners stay widescreen
+function posterStyle(m) {
+  const img = m.poster_url || m.backdrop_url;
+  return img ? `background-image:url('${encodeURI(img)}')` : `background-image:${fallbackBanner(m.id)}`;
+}
+
 // Avatar: uploaded photo if present, otherwise colored initial
 function avatarHtml(user, cls = '') {
   if (user.avatar_url) {
@@ -103,7 +109,7 @@ function renderMovieGrid() {
   const q = $('#movie-filter').value.trim().toLowerCase();
   const movies = q ? allMovies.filter(m => m.title.toLowerCase().includes(q)) : allMovies;
   $('#movie-grid').innerHTML = movies.length ? movies.map(m => `
-    <div class="movie-card" data-id="${m.id}" style="${bannerStyle(m)}">
+    <div class="movie-card" data-id="${m.id}" style="${posterStyle(m)}">
       <div class="banner-overlay">
         <h3>${escapeHtml(m.title)}</h3>
         <div class="banner-meta">

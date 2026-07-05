@@ -95,12 +95,12 @@ button.primary.small { padding: 0.45rem 0.9rem; font-size: 0.85rem; }
 
 /* Movie grid — banner cards */
 .grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 1rem; margin-top: 1rem;
 }
 .movie-card {
   position: relative; border-radius: 14px; overflow: hidden; cursor: pointer;
-  aspect-ratio: 16 / 10; background-size: cover; background-position: center top;
+  aspect-ratio: 2 / 3; background-size: cover; background-position: center top;
   transition: transform 0.15s;
 }
 .movie-card:hover { transform: translateY(-3px) scale(1.01); }
@@ -360,7 +360,7 @@ input[type="color"] {
   nav { width: 100%; justify-content: space-around; }
   .nav-btn { padding: 0.45rem 0.6rem; font-size: 0.88rem; }
   .tab { padding: 1rem; }
-  .grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 0.7rem; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 0.7rem; }
   .banner-overlay h3 { font-size: 0.88rem; }
   .modal { padding: 0; align-items: flex-end; }
   .modal-box, .modal-box.wide {
