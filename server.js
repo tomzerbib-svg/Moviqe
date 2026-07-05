@@ -4,8 +4,17 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const cookieSession = require('cookie-session');
 
+// Load .env (kept out of git) into process.env — real env vars win
+try {
+  require('fs').readFileSync(path.join(__dirname, '.env'), 'utf8').split('\n').forEach(line => {
+    const m = line.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  });
+} catch (e) { /* no .env file — fine */ }
+
 const PORT = process.env.PORT || 3000;
-const TMDB_KEY = process.env.TMDB_API_KEY;
+const TMDB_KEY = process.env.TMDB_API_KEY;      // short "API Key" — sent as query param
+const TMDB_TOKEN = process.env.TMDB_TOKEN;      // long "API Read Access Token" — sent as bearer header
 const db = new Database(path.join(__dirname, 'moviqe.db'));
 db.pragma('journal_mode = WAL');
 
@@ -79,8 +88,10 @@ function imdbImage(url) {
 }
 
 async function searchProvider(q) {
-  if (TMDB_KEY) {
-    const res = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_KEY}&query=${encodeURIComponent(q)}`);
+  if (TMDB_TOKEN || TMDB_KEY) {
+    const url = `https://api.themoviedb.org/3/search/movie?query=${encodeURIComponent(q)}`
+      + (TMDB_KEY ? `&api_key=${TMDB_KEY}` : '');
+    const res = await fetch(url, TMDB_TOKEN ? { headers: { Authorization: `Bearer ${TMDB_TOKEN}` } } : {});
     if (!res.ok) throw new Error('TMDB request failed');
     const data = await res.json();
     return (data.results || []).slice(0, 10).map(r => ({
@@ -110,18 +121,22 @@ async function searchProvider(q) {
     }));
 }
 
-// Fill in banners for catalog movies that don't have one yet (runs in the
-// background at startup; placeholders stay if the network is down).
+// Fill in missing artwork for catalog movies (runs in the background at
+// startup; placeholders stay if the network is down). Never overwrites art a
+// movie already has — only fills the gaps, e.g. adding TMDB widescreen
+// backdrops to movies that so far only had an IMDb poster.
 (async () => {
-  const missing = db.prepare('SELECT id, title, year FROM movies WHERE poster_url IS NULL').all();
+  const missing = db.prepare('SELECT id, title, year FROM movies WHERE poster_url IS NULL OR backdrop_url IS NULL').all();
   for (const m of missing) {
     try {
       const results = await searchProvider(m.title);
       const best = results.find(r => r.poster_url && (!m.year || !r.year || Math.abs(r.year - m.year) <= 1))
         || results.find(r => r.poster_url);
-      if (best) db.prepare('UPDATE movies SET poster_url = ?, backdrop_url = ? WHERE id = ?')
-        .run(best.poster_url, best.backdrop_url, m.id);
-    } catch (e) { /* offline or rate limited — colored placeholder stays */ }
+      if (best) db.prepare(`
+        UPDATE movies SET poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?)
+        WHERE id = ?
+      `).run(best.poster_url, best.backdrop_url, m.id);
+    } catch (e) { /* offline or rate limited — existing art or placeholder stays */ }
   }
 })();
 
