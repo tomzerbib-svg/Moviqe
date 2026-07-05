@@ -1,0 +1,6 @@
+node_modules/
+moviqe.db
+moviqe.db-shm
+moviqe.db-wal
+.env
+.DS_Store

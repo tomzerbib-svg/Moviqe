@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moviqe — Rate movies</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="logo.svg" alt="Moviqe logo" class="logo">
+      <span class="brand-name">Moviqe</span>
+    </div>
+    <nav id="nav" class="hidden">
+      <button class="nav-btn active" data-tab="movies">Movies</button>
+      <button class="nav-btn" data-tab="my-reviews">My Reviews</button>
+      <button class="nav-btn" data-tab="profile">Profile</button>
+      <button id="logout-btn" class="nav-btn ghost">Log out</button>
+    </nav>
+  </header>
+
+  <!-- Auth screen -->
+  <main id="auth-view" class="auth-wrap">
+    <div class="auth-card">
+      <img src="logo.svg" alt="" class="auth-logo">
+      <h1>Welcome to Moviqe</h1>
+      <p class="muted">Rate movies, write reviews, make it yours.</p>
+      <div class="auth-tabs">
+        <button id="show-login" class="active">Log in</button>
+        <button id="show-register">Sign up</button>
+      </div>
+      <form id="auth-form">
+        <input type="text" id="auth-username" placeholder="Username" autocomplete="username" required>
+        <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" required>
+        <p id="auth-error" class="error hidden"></p>
+        <button type="submit" class="primary" id="auth-submit">Log in</button>
+      </form>
+    </div>
+  </main>
+
+  <!-- App -->
+  <main id="app-view" class="hidden">
+    <!-- Movies tab -->
+    <section id="tab-movies" class="tab">
+      <div class="tab-head">
+        <h2>Movies</h2>
+        <button id="add-movie-btn" class="primary small">+ Add movie</button>
+      </div>
+      <div id="movie-grid" class="grid"></div>
+    </section>
+
+    <!-- My Reviews tab -->
+    <section id="tab-my-reviews" class="tab hidden">
+      <h2>My Reviews</h2>
+      <div id="my-reviews-list"></div>
+    </section>
+
+    <!-- Profile tab (Instagram-style) -->
+    <section id="tab-profile" class="tab hidden">
+      <div class="ig-head">
+        <div id="profile-avatar" class="avatar avatar-xl"></div>
+        <div class="ig-info">
+          <div class="ig-row">
+            <h2 id="profile-username"></h2>
+            <button id="edit-profile-btn" class="ghost-btn">Edit profile</button>
+          </div>
+          <div class="ig-stats">
+            <span><strong id="stat-reviews">0</strong> reviews</span>
+            <span><strong id="stat-favorites">0</strong> favorites</span>
+            <span><strong id="stat-avg">–</strong> avg rating</span>
+          </div>
+          <p id="profile-bio" class="ig-bio"></p>
+          <p class="muted" id="profile-since"></p>
+        </div>
+      </div>
+      <div class="ig-tabs">
+        <button class="ig-tab active" data-grid="favorites">♥ Favorites</button>
+        <button class="ig-tab" data-grid="reviewed">★ Reviewed</button>
+      </div>
+      <div id="profile-grid" class="poster-grid"></div>
+    </section>
+  </main>
+
+  <!-- Movie detail modal -->
+  <div id="movie-modal" class="modal hidden">
+    <div class="modal-box wide">
+      <button class="modal-close" data-close="movie-modal">×</button>
+      <div id="movie-detail"></div>
+    </div>
+  </div>
+
+  <!-- Add movie modal (search-based) -->
+  <div id="add-modal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="add-modal">×</button>
+      <h3>Add a movie</h3>
+      <form id="search-form" class="search-row">
+        <input type="text" id="search-q" placeholder="Search for a movie..." required>
+        <button type="submit" class="primary small">Search</button>
+      </form>
+      <div id="search-results"></div>
+    </div>
+  </div>
+
+  <!-- Edit profile modal -->
+  <div id="edit-modal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="edit-modal">×</button>
+      <h3>Edit profile</h3>
+      <form id="profile-form">
+        <label>Bio
+          <textarea id="profile-bio-input" rows="3" maxlength="500" placeholder="Tell people what you like watching..."></textarea>
+        </label>
+        <fieldset class="colors">
+          <legend>Customize your look</legend>
+          <label>Background <input type="color" id="color-bg"></label>
+          <label>Accent <input type="color" id="color-accent"></label>
+          <label>Avatar <input type="color" id="color-avatar"></label>
+        </fieldset>
+        <button type="submit" class="primary">Save profile</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
