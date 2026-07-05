@@ -83,7 +83,31 @@ button.primary.small { padding: 0.45rem 0.9rem; font-size: 0.85rem; }
 
 /* Tabs / layout */
 .tab { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
-.tab-head { display: flex; justify-content: space-between; align-items: center; }
+.tab-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.tab-tools { display: flex; gap: 0.6rem; align-items: center; flex: 1; justify-content: flex-end; }
+#movie-filter { max-width: 240px; width: 100%; padding: 0.5rem 0.9rem; }
+
+/* Cast + providers */
+.cast-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip {
+  background: var(--card); border-radius: 16px; padding: 0.3rem 0.75rem;
+  font-size: 0.82rem; color: var(--muted);
+}
+.chip strong { color: var(--text); font-weight: 600; }
+.prov-group { display: flex; align-items: baseline; gap: 0.8rem; margin-bottom: 0.6rem; }
+.prov-label {
+  width: 52px; flex-shrink: 0; font-size: 0.78rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.prov-logos { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.prov {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  background: var(--card); border-radius: 8px; padding: 0.25rem 0.6rem 0.25rem 0.3rem;
+  font-size: 0.82rem;
+}
+.prov img { width: 24px; height: 24px; border-radius: 6px; }
+.attribution { font-size: 0.75rem; }
+.attribution a { color: var(--accent); }
 
 /* Movie grid — banner cards */
 .grid {

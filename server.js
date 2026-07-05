@@ -55,8 +55,18 @@ CREATE TABLE IF NOT EXISTS likes (
 `);
 
 const movieCols = db.prepare('PRAGMA table_info(movies)').all().map(c => c.name);
-if (!movieCols.includes('poster_url')) db.exec('ALTER TABLE movies ADD COLUMN poster_url TEXT');
-if (!movieCols.includes('backdrop_url')) db.exec('ALTER TABLE movies ADD COLUMN backdrop_url TEXT');
+[
+  ['poster_url', 'poster_url TEXT'],
+  ['backdrop_url', 'backdrop_url TEXT'],
+  ['tmdb_id', 'tmdb_id INTEGER'],
+  ['popularity', 'popularity REAL'],
+  ['runtime', 'runtime INTEGER'],
+  ['cast_json', 'cast_json TEXT'],
+  ['providers_json', 'providers_json TEXT'],
+  ['details_at', 'details_at TEXT']
+].forEach(([name, ddl]) => {
+  if (!movieCols.includes(name)) db.exec(`ALTER TABLE movies ADD COLUMN ${ddl}`);
+});
 
 // Seed a starter catalog on first run
 if (db.prepare('SELECT COUNT(*) AS n FROM movies').get().n === 0) {
@@ -87,21 +97,31 @@ function imdbImage(url) {
   return url ? url.replace('._V1_.', '._V1_QL75_UX800_.') : null;
 }
 
+const tmdbEnabled = () => Boolean(TMDB_TOKEN || TMDB_KEY);
+
+async function tmdb(pathq) {
+  const url = `https://api.themoviedb.org/3${pathq}`
+    + (TMDB_KEY ? (pathq.includes('?') ? '&' : '?') + 'api_key=' + TMDB_KEY : '');
+  const res = await fetch(url, TMDB_TOKEN ? { headers: { Authorization: `Bearer ${TMDB_TOKEN}` } } : {});
+  if (!res.ok) throw new Error('TMDB request failed: ' + res.status);
+  return res.json();
+}
+
+const tmdbMovie = r => ({
+  title: r.title,
+  year: r.release_date ? parseInt(r.release_date.slice(0, 4)) : null,
+  genre: '',
+  description: r.overview || '',
+  poster_url: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null,
+  backdrop_url: r.backdrop_path ? `https://image.tmdb.org/t/p/w780${r.backdrop_path}` : null,
+  tmdb_id: r.id,
+  popularity: r.popularity || null
+});
+
 async function searchProvider(q) {
-  if (TMDB_TOKEN || TMDB_KEY) {
-    const url = `https://api.themoviedb.org/3/search/movie?query=${encodeURIComponent(q)}`
-      + (TMDB_KEY ? `&api_key=${TMDB_KEY}` : '');
-    const res = await fetch(url, TMDB_TOKEN ? { headers: { Authorization: `Bearer ${TMDB_TOKEN}` } } : {});
-    if (!res.ok) throw new Error('TMDB request failed');
-    const data = await res.json();
-    return (data.results || []).slice(0, 10).map(r => ({
-      title: r.title,
-      year: r.release_date ? parseInt(r.release_date.slice(0, 4)) : null,
-      genre: '',
-      description: r.overview || '',
-      poster_url: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null,
-      backdrop_url: r.backdrop_path ? `https://image.tmdb.org/t/p/w780${r.backdrop_path}` : null
-    }));
+  if (tmdbEnabled()) {
+    const data = await tmdb(`/search/movie?query=${encodeURIComponent(q)}`);
+    return (data.results || []).slice(0, 10).map(tmdbMovie);
   }
   const slug = q.toLowerCase().trim();
   const bucket = /^[a-z0-9]/.test(slug) ? slug[0] : 'x';
@@ -121,23 +141,66 @@ async function searchProvider(q) {
     }));
 }
 
-// Fill in missing artwork for catalog movies (runs in the background at
-// startup; placeholders stay if the network is down). Never overwrites art a
-// movie already has — only fills the gaps, e.g. adding TMDB widescreen
-// backdrops to movies that so far only had an IMDb poster.
-(async () => {
-  const missing = db.prepare('SELECT id, title, year FROM movies WHERE poster_url IS NULL OR backdrop_url IS NULL').all();
+// Pull TMDB's popular-movies list into the catalog so the landing page has a
+// long list out of the box. Safe to run on every start: movies already in the
+// catalog (by tmdb_id, or by title+year for pre-TMDB entries) are skipped or
+// linked, never duplicated.
+async function importPopular() {
+  if (!tmdbEnabled()) return;
+  let genreMap = {};
+  try {
+    genreMap = Object.fromEntries((await tmdb('/genre/movie/list')).genres.map(g => [g.id, g.name]));
+  } catch (e) { /* genres stay blank */ }
+  const insert = db.prepare(`
+    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (let page = 1; page <= 5; page++) {
+    const data = await tmdb(`/movie/popular?page=${page}`);
+    for (const r of (data.results || [])) {
+      const m = tmdbMovie(r);
+      if (db.prepare('SELECT 1 FROM movies WHERE tmdb_id = ?').get(m.tmdb_id)) continue;
+      const existing = db.prepare(
+        'SELECT id FROM movies WHERE tmdb_id IS NULL AND lower(title) = lower(?) AND year IS ?'
+      ).get(m.title, m.year);
+      if (existing) {
+        db.prepare(`
+          UPDATE movies SET tmdb_id = ?, popularity = ?,
+            poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?)
+          WHERE id = ?
+        `).run(m.tmdb_id, m.popularity, m.poster_url, m.backdrop_url, existing.id);
+        continue;
+      }
+      const genre = (r.genre_ids || []).slice(0, 2).map(i => genreMap[i]).filter(Boolean).join(' · ');
+      insert.run(m.title, m.year, genre, m.description, m.poster_url, m.backdrop_url, m.tmdb_id, m.popularity);
+    }
+  }
+}
+
+// Fill gaps for movies that predate the TMDB link: missing artwork, tmdb_id
+// or popularity. Never overwrites values a movie already has.
+async function enrichCatalog() {
+  const missing = db.prepare(`
+    SELECT id, title, year FROM movies
+    WHERE poster_url IS NULL OR backdrop_url IS NULL OR tmdb_id IS NULL
+  `).all();
   for (const m of missing) {
     try {
       const results = await searchProvider(m.title);
       const best = results.find(r => r.poster_url && (!m.year || !r.year || Math.abs(r.year - m.year) <= 1))
         || results.find(r => r.poster_url);
       if (best) db.prepare(`
-        UPDATE movies SET poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?)
+        UPDATE movies SET poster_url = COALESCE(poster_url, ?), backdrop_url = COALESCE(backdrop_url, ?),
+          tmdb_id = COALESCE(tmdb_id, ?), popularity = COALESCE(popularity, ?)
         WHERE id = ?
-      `).run(best.poster_url, best.backdrop_url, m.id);
+      `).run(best.poster_url, best.backdrop_url, best.tmdb_id || null, best.popularity || null, m.id);
     } catch (e) { /* offline or rate limited — existing art or placeholder stays */ }
   }
+}
+
+(async () => {
+  try { await importPopular(); } catch (e) { console.error('popular import failed:', e.message); }
+  await enrichCatalog();
 })();
 
 const app = express();
@@ -259,20 +322,68 @@ app.get('/api/movies', (req, res) => {
       (SELECT COUNT(*) FROM likes l WHERE l.movie_id = m.id) AS like_count,
       EXISTS(SELECT 1 FROM likes l WHERE l.movie_id = m.id AND l.user_id = ?) AS liked
     FROM movies m LEFT JOIN reviews r ON r.movie_id = m.id
-    GROUP BY m.id ORDER BY m.title
+    GROUP BY m.id ORDER BY m.popularity IS NULL, m.popularity DESC, m.title
   `).all(uid));
 });
 
-app.get('/api/movies/:id', (req, res) => {
+// Runtime, cast and where-to-watch come from TMDB the first time a movie is
+// opened, then live in the local db. Providers are looked up for WATCH_REGION
+// (default IL) with a US fallback; that data is licensed from JustWatch, so
+// the UI shows attribution.
+async function fetchDetails(movie) {
+  const d = await tmdb(`/movie/${movie.tmdb_id}?append_to_response=credits,watch/providers`);
+  const region = process.env.WATCH_REGION || 'IL';
+  const all = (d['watch/providers'] && d['watch/providers'].results) || {};
+  const prov = all[region] || all.US || null;
+  const mapProv = arr => (arr || []).slice(0, 8).map(p => ({
+    name: p.provider_name,
+    logo: p.logo_path ? `https://image.tmdb.org/t/p/w92${p.logo_path}` : null
+  }));
+  const providers = prov ? {
+    region: all[region] ? region : 'US',
+    link: prov.link || null,
+    stream: mapProv(prov.flatrate),
+    rent: mapProv(prov.rent),
+    buy: mapProv(prov.buy)
+  } : null;
+  const cast = ((d.credits && d.credits.cast) || []).slice(0, 8)
+    .map(c => ({ name: c.name, character: c.character || '' }));
+  db.prepare(`
+    UPDATE movies SET runtime = ?, genre = COALESCE(NULLIF(genre, ''), ?),
+      description = COALESCE(NULLIF(description, ''), ?),
+      cast_json = ?, providers_json = ?, details_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    d.runtime || null,
+    (d.genres || []).slice(0, 3).map(g => g.name).join(' · '),
+    d.overview || '',
+    JSON.stringify(cast),
+    providers ? JSON.stringify(providers) : null,
+    movie.id
+  );
+}
+
+app.get('/api/movies/:id', async (req, res) => {
   const uid = req.session.userId || 0;
-  const movie = db.prepare(`
+  const getMovie = () => db.prepare(`
     SELECT m.*, ROUND(AVG(r.stars), 1) AS avg_stars, COUNT(r.id) AS review_count,
       (SELECT COUNT(*) FROM likes l WHERE l.movie_id = m.id) AS like_count,
       EXISTS(SELECT 1 FROM likes l WHERE l.movie_id = m.id AND l.user_id = ?) AS liked
     FROM movies m LEFT JOIN reviews r ON r.movie_id = m.id
     WHERE m.id = ? GROUP BY m.id
   `).get(uid, req.params.id);
+  let movie = getMovie();
   if (!movie) return res.status(404).json({ error: 'Movie not found' });
+  if (movie.tmdb_id && !movie.details_at && tmdbEnabled()) {
+    try {
+      await fetchDetails(movie);
+      movie = getMovie();
+    } catch (e) { /* show what we have; retried on next open */ }
+  }
+  movie.cast = movie.cast_json ? JSON.parse(movie.cast_json) : [];
+  movie.providers = movie.providers_json ? JSON.parse(movie.providers_json) : null;
+  delete movie.cast_json;
+  delete movie.providers_json;
   movie.reviews = db.prepare(`
     SELECT r.id, r.stars, r.text, r.created_at, u.username, u.avatar_color, r.user_id
     FROM reviews r JOIN users u ON u.id = r.user_id
@@ -282,17 +393,19 @@ app.get('/api/movies/:id', (req, res) => {
 });
 
 app.post('/api/movies', requireAuth, (req, res) => {
-  const { title, year, genre, description, poster_url, backdrop_url } = req.body || {};
+  const { title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title is required' });
   const t = title.trim().slice(0, 200);
   const y = parseInt(year) || null;
-  const dupe = db.prepare('SELECT id FROM movies WHERE lower(title) = lower(?) AND (year IS ? OR year = ?)').get(t, y, y);
+  const dupe = db.prepare('SELECT id FROM movies WHERE lower(title) = lower(?) AND (year IS ? OR year = ?)').get(t, y, y)
+    || (parseInt(tmdb_id) ? db.prepare('SELECT id FROM movies WHERE tmdb_id = ?').get(parseInt(tmdb_id)) : null);
   if (dupe) return res.status(409).json({ error: 'That movie is already in the catalog' });
   const info = db.prepare(`
-    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, added_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, added_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t, y, (genre || '').slice(0, 50), (description || '').slice(0, 1000),
-    httpsUrl(poster_url), httpsUrl(backdrop_url), req.session.userId);
+    httpsUrl(poster_url), httpsUrl(backdrop_url),
+    parseInt(tmdb_id) || null, parseFloat(popularity) || null, req.session.userId);
   res.json(db.prepare('SELECT * FROM movies WHERE id = ?').get(info.lastInsertRowid));
 });
 

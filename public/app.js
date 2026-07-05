@@ -88,9 +88,12 @@ function switchTab(name) {
 }
 
 // ---- Movies ----
-async function loadMovies() {
-  const movies = await api('/api/movies');
-  $('#movie-grid').innerHTML = movies.map(m => `
+let allMovies = [];
+
+function renderMovieGrid() {
+  const q = $('#movie-filter').value.trim().toLowerCase();
+  const movies = q ? allMovies.filter(m => m.title.toLowerCase().includes(q)) : allMovies;
+  $('#movie-grid').innerHTML = movies.length ? movies.map(m => `
     <div class="movie-card" data-id="${m.id}" style="${bannerStyle(m)}">
       <div class="banner-overlay">
         <h3>${escapeHtml(m.title)}</h3>
@@ -100,9 +103,34 @@ async function loadMovies() {
         </div>
       </div>
     </div>
-  `).join('');
+  `).join('') : '<div class="grid-empty">No movies match your filter.</div>';
   document.querySelectorAll('.movie-card').forEach(c =>
     c.addEventListener('click', () => openMovie(c.dataset.id)));
+}
+
+async function loadMovies() {
+  allMovies = await api('/api/movies');
+  renderMovieGrid();
+}
+
+$('#movie-filter').addEventListener('input', renderMovieGrid);
+
+function fmtRuntime(mins) {
+  return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+}
+
+function providersHtml(p) {
+  if (!p) return '<p class="muted">No streaming availability found for your region.</p>';
+  const group = (label, arr) => (arr && arr.length) ? `
+    <div class="prov-group">
+      <span class="prov-label">${label}</span>
+      <div class="prov-logos">
+        ${arr.map(x => `<span class="prov">${x.logo ? `<img src="${encodeURI(x.logo)}" alt="">` : ''}${escapeHtml(x.name)}</span>`).join('')}
+      </div>
+    </div>` : '';
+  const groups = group('Stream', p.stream) + group('Rent', p.rent) + group('Buy', p.buy);
+  return (groups || '<p class="muted">No streaming availability found for your region.</p>')
+    + `<p class="muted attribution">Availability in ${escapeHtml(p.region)} · streaming data by JustWatch${p.link ? ` · <a href="${encodeURI(p.link)}" target="_blank" rel="noopener">more options</a>` : ''}</p>`;
 }
 
 async function openMovie(id) {
@@ -115,7 +143,7 @@ async function openMovie(id) {
       <div class="banner-overlay">
         <h3>${escapeHtml(m.title)} <span class="muted">(${m.year || '—'})</span></h3>
         <div class="banner-meta">
-          <span>${escapeHtml(m.genre || '')}</span>
+          <span>${escapeHtml(m.genre || '')}${m.runtime ? ` · ${fmtRuntime(m.runtime)}` : ''}</span>
           <span class="stars-display">${starString(m.avg_stars)} ${m.avg_stars || '—'} · ${m.review_count} review(s)</span>
         </div>
       </div>
@@ -127,6 +155,13 @@ async function openMovie(id) {
         </button>
       </div>
       <p>${escapeHtml(m.description || '')}</p>
+      ${m.cast.length ? `
+        <h4>Cast</h4>
+        <div class="cast-list">
+          ${m.cast.map(c => `<span class="chip"><strong>${escapeHtml(c.name)}</strong>${c.character ? ` · ${escapeHtml(c.character)}` : ''}</span>`).join('')}
+        </div>` : ''}
+      <h4>Where to watch</h4>
+      ${providersHtml(m.providers)}
       <h4>${mine ? 'Update your review' : 'Your review'}</h4>
       <div class="star-input" id="star-input">
         ${[1, 2, 3, 4, 5].map(i => `<span data-v="${i}">★</span>`).join('')}
