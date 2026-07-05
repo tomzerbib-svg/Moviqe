@@ -84,8 +84,10 @@ button.primary.small { padding: 0.45rem 0.9rem; font-size: 0.85rem; }
 /* Tabs / layout */
 .tab { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
 .tab-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.tab-tools { display: flex; gap: 0.6rem; align-items: center; flex: 1; justify-content: flex-end; }
-#movie-filter { max-width: 240px; width: 100%; padding: 0.5rem 0.9rem; }
+.movie-search {
+  display: block; width: 100%; margin-top: 1rem;
+  padding: 0.85rem 1.2rem; font-size: 1.05rem; border-radius: 12px;
+}
 
 /* Cast + providers */
 .cast-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
