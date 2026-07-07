@@ -260,6 +260,9 @@ app.use((req, res, next) => {
     'Referrer-Policy': 'no-referrer',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
   });
+  if (process.env.NODE_ENV === 'production') {
+    res.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
   next();
 });
 
@@ -312,9 +315,18 @@ app.use(cookieSession({
 app.use(express.static(path.join(__dirname, 'public')));
 
 function requireAuth(req, res, next) {
-  if (!req.session.userId) return res.status(401).json({ error: 'Not logged in' });
+  if (!req.session.userId || !db.prepare('SELECT 1 FROM users WHERE id = ?').get(req.session.userId)) {
+    req.session = null; // stale cookie for a user that no longer exists
+    return res.status(401).json({ error: 'Not logged in' });
+  }
   next();
 }
+
+// Clamp user-supplied numbers so nobody stores a fake "TMDB 99" score
+const clamp = (v, min, max) => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+};
 
 const publicUser = u => ({
   id: u.id, username: u.username, email: u.email || null, bio: u.bio,
@@ -351,7 +363,7 @@ app.post('/api/register', authLimiter, (req, res) => {
   }
   const pwErr = passwordProblem(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
-  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+  if (db.prepare('SELECT 1 FROM users WHERE lower(username) = lower(?)').get(username)) {
     return res.status(409).json({ error: 'Username already taken' });
   }
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail)) {
@@ -474,6 +486,9 @@ function getList(id, uid) {
 app.post('/api/lists', requireAuth, (req, res) => {
   const { title, kind } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: 'List name is required' });
+  if (db.prepare('SELECT COUNT(*) AS n FROM lists WHERE user_id = ?').get(req.session.userId).n >= 50) {
+    return res.status(400).json({ error: 'List limit reached (50 per account)' });
+  }
   const k = kind === 'random' ? 'random' : 'ranked';
   const info = db.prepare('INSERT INTO lists (user_id, title, kind) VALUES (?, ?, ?)')
     .run(req.session.userId, title.trim().slice(0, 100), k);
@@ -505,6 +520,9 @@ app.post('/api/lists/:id/items', requireAuth, (req, res) => {
   const movieId = parseInt((req.body || {}).movie_id);
   if (!db.prepare('SELECT id FROM movies WHERE id = ?').get(movieId)) {
     return res.status(404).json({ error: 'Movie not found' });
+  }
+  if (db.prepare('SELECT COUNT(*) AS n FROM list_items WHERE list_id = ?').get(list.id).n >= 100) {
+    return res.status(400).json({ error: 'List is full (100 movies max)' });
   }
   try {
     const next = db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM list_items WHERE list_id = ?').get(list.id).p;
@@ -540,7 +558,7 @@ app.post('/api/lists/:id/move', requireAuth, (req, res) => {
 
 // ---- Movie search (external provider) ----
 app.get('/api/search', requireAuth, async (req, res) => {
-  const q = (req.query.q || '').trim();
+  const q = String(req.query.q || '').trim().slice(0, 100);
   if (!q) return res.json([]);
   try {
     res.json(await searchProvider(q));
@@ -586,7 +604,7 @@ async function fetchDetails(movie) {
   // External audience scores: OMDb (free key) carries IMDb + Rotten Tomatoes.
   // Without a key the UI still shows the TMDB score and a link to IMDb.
   let scores = null;
-  const imdbId = d.imdb_id || '';
+  const imdbId = /^tt\d{1,12}$/.test(d.imdb_id || '') ? d.imdb_id : '';
   if (process.env.OMDB_API_KEY && imdbId) {
     try {
       const o = await (await fetch(`https://www.omdbapi.com/?apikey=${process.env.OMDB_API_KEY}&i=${imdbId}`)).json();
@@ -651,11 +669,13 @@ app.get('/api/movies/:id', async (req, res) => {
   res.json(movie);
 });
 
-app.post('/api/movies', requireAuth, (req, res) => {
+const addMovieLimiter = rateLimit(60 * 60 * 1000, 30); // catalog spam cap per IP
+
+app.post('/api/movies', requireAuth, addMovieLimiter, (req, res) => {
   const { title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, vote_average, vote_count } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title is required' });
   const t = title.trim().slice(0, 200);
-  const y = parseInt(year) || null;
+  const y = clamp(year, 1888, 2100);
   const dupe = db.prepare('SELECT id FROM movies WHERE lower(title) = lower(?) AND (year IS ? OR year = ?)').get(t, y, y)
     || (parseInt(tmdb_id) ? db.prepare('SELECT id FROM movies WHERE tmdb_id = ?').get(parseInt(tmdb_id)) : null);
   if (dupe) return res.status(409).json({ error: 'That movie is already in the catalog' });
@@ -664,8 +684,8 @@ app.post('/api/movies', requireAuth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t, y, (genre || '').slice(0, 50), (description || '').slice(0, 1000),
     httpsUrl(poster_url), httpsUrl(backdrop_url),
-    parseInt(tmdb_id) || null, parseFloat(popularity) || null,
-    parseFloat(vote_average) || null, parseInt(vote_count) || null, req.session.userId);
+    parseInt(tmdb_id) || null, clamp(popularity, 0, 1e9),
+    clamp(vote_average, 0, 10), clamp(vote_count, 0, 1e9), req.session.userId);
   res.json(db.prepare('SELECT * FROM movies WHERE id = ?').get(info.lastInsertRowid));
 });
 
