@@ -25,6 +25,10 @@ npm start
 - **Export to social media:** the button exists in the My Reviews tab. Implement it in `exportReview(reviewId)` in `public/app.js` (marked with `TODO(export)`).
 - **Session secret:** in production set the `SESSION_SECRET` environment variable to a long random string.
 
+## Letterboxd import
+
+Profile → "Import from Letterboxd". Users upload CSVs from Letterboxd's official data export (Settings → Data → Export): `ratings.csv` / `reviews.csv` for stars + review text, `likes/films.csv` for favorites. Half-star ratings round to the nearest star; movies missing from the catalog are pulled in from TMDB (capped at 300 lookups per import, 5 imports per hour per IP). Unmatched titles are reported back to the user.
+
 ## Security
 
 - Registration requires a unique email and a password of 8+ characters with a letter and a number; login works with username or email. Passwords are bcrypt-hashed.

@@ -447,6 +447,52 @@ function renderListDetail() {
   });
 }
 
+// ---- Letterboxd import ----
+$('#import-btn').addEventListener('click', () => {
+  $('#import-result').innerHTML = '';
+  $('#import-form').reset();
+  $('#import-modal').classList.remove('hidden');
+});
+
+const readFileText = file => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(r.result);
+  r.onerror = () => reject(new Error('Could not read ' + file.name));
+  r.readAsText(file);
+});
+
+$('#import-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const reviewFiles = [...$('#lb-reviews').files];
+  const likesFile = $('#lb-likes').files[0];
+  if (!reviewFiles.length && !likesFile) return toast('Pick at least one CSV file');
+  const tooBig = [...reviewFiles, likesFile].filter(Boolean).find(f => f.size > 5 * 1024 * 1024);
+  if (tooBig) return toast(`${tooBig.name} is too large (max 5MB)`);
+
+  const btn = $('#lb-submit');
+  btn.disabled = true;
+  btn.textContent = 'Importing... this can take a minute';
+  try {
+    const files = [];
+    for (const f of reviewFiles) files.push({ name: f.name, kind: 'reviews', content: await readFileText(f) });
+    if (likesFile) files.push({ name: likesFile.name, kind: 'likes', content: await readFileText(likesFile) });
+    const r = await api('/api/import/letterboxd', { method: 'POST', body: { files } });
+    $('#import-result').innerHTML = `
+      <div class="review-item">
+        <p class="review-text">✓ Imported <strong>${r.reviews}</strong> ratings/reviews and <strong>${r.favorites}</strong> favorites.<br>
+        ${r.added_movies} movies were added to the catalog. ${r.skipped} rows skipped.</p>
+        ${r.unmatched.length ? `<p class="muted">Couldn't match: ${r.unmatched.map(escapeHtml).join(', ')}</p>` : ''}
+      </div>`;
+    toast('Letterboxd import finished');
+    loadProfile();
+  } catch (err) {
+    $('#import-result').innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Import';
+  }
+});
+
 // ---- Edit profile ----
 $('#edit-profile-btn').addEventListener('click', () => {
   $('#profile-bio-input').value = me.bio || '';

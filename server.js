@@ -299,10 +299,11 @@ const authLimiter = rateLimit(15 * 60 * 1000, 20);   // login/register attempts
 const apiLimiter = rateLimit(15 * 60 * 1000, 1000);  // everything else
 app.use('/api/', apiLimiter);
 
-// Small JSON bodies everywhere except the avatar upload
+// Small JSON bodies everywhere except the avatar upload and CSV import
 const smallJson = express.json({ limit: '100kb' });
-const bigJson = express.json({ limit: '4mb' });
-app.use((req, res, next) => (req.path === '/api/profile/avatar' ? bigJson : smallJson)(req, res, next));
+const bigJson = express.json({ limit: '10mb' });
+const BIG_BODY_PATHS = ['/api/profile/avatar', '/api/import/letterboxd'];
+app.use((req, res, next) => (BIG_BODY_PATHS.includes(req.path) ? bigJson : smallJson)(req, res, next));
 
 app.use(cookieSession({
   name: 'moviqe',
@@ -554,6 +555,125 @@ app.post('/api/lists/:id/move', requireAuth, (req, res) => {
     swap.run(items[i].position, list.id, items[j].movie_id);
   }
   res.json(getList(list.id, req.session.userId));
+});
+
+// ---- Letterboxd import ----
+// Letterboxd has no public API; users migrate via their official data export
+// (Settings -> Data -> Export), a zip of CSVs. We accept ratings.csv and
+// reviews.csv (kind "reviews") plus likes/films.csv (kind "likes").
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  if (rows.length < 2) return [];
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  return rows.slice(1).map(r => Object.fromEntries(header.map((h, i) => [h, (r[i] || '').trim()])));
+}
+
+function findLocalMovie(title, year) {
+  const cands = db.prepare('SELECT id, year FROM movies WHERE lower(title) = lower(?)').all(title);
+  if (!cands.length) return null;
+  if (year) {
+    const hit = cands.find(c => c.year === year) || cands.find(c => c.year && Math.abs(c.year - year) <= 1);
+    return hit ? hit.id : null; // same title, different year = probably a remake
+  }
+  return cands[0].id;
+}
+
+const importLimiter = rateLimit(60 * 60 * 1000, 5);
+
+app.post('/api/import/letterboxd', requireAuth, importLimiter, async (req, res) => {
+  const files = Array.isArray((req.body || {}).files) ? req.body.files.slice(0, 10) : [];
+  if (!files.length) return res.status(400).json({ error: 'Upload at least one CSV from your Letterboxd export' });
+  const uid = req.session.userId;
+  const result = { reviews: 0, favorites: 0, added_movies: 0, skipped: 0, unmatched: [] };
+  let tmdbLookups = 0;
+
+  const skip = title => {
+    result.skipped++;
+    if (title && result.unmatched.length < 20 && !result.unmatched.includes(title)) result.unmatched.push(title);
+  };
+
+  // Find the movie locally; otherwise pull it from TMDB into the catalog
+  // (capped per import so one upload can't burn the API quota)
+  const resolveMovie = async (title, year) => {
+    const local = findLocalMovie(title, year);
+    if (local) return local;
+    if (!tmdbEnabled() || tmdbLookups >= 300) return null;
+    tmdbLookups++;
+    try {
+      const results = await searchProvider(title);
+      const best = results.find(r => year && r.year && Math.abs(r.year - year) <= 1)
+        || (!year && results[0]) || null;
+      if (!best) return null;
+      if (best.tmdb_id) {
+        const ex = db.prepare('SELECT id FROM movies WHERE tmdb_id = ?').get(best.tmdb_id);
+        if (ex) return ex.id;
+      }
+      const info = db.prepare(`
+        INSERT INTO movies (title, year, genre, description, poster_url, backdrop_url, tmdb_id, popularity, vote_average, vote_count, added_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(String(best.title).slice(0, 200), best.year, '', (best.description || '').slice(0, 1000),
+        best.poster_url, best.backdrop_url, best.tmdb_id || null, best.popularity || null,
+        best.vote_average || null, best.vote_count || null, uid);
+      result.added_movies++;
+      return info.lastInsertRowid;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  for (const f of files) {
+    if (typeof f.content !== 'string' || f.content.length > 5 * 1024 * 1024) continue;
+    const asLikes = f.kind === 'likes';
+    for (const r of parseCsv(f.content).slice(0, 2000)) {
+      const title = (r.name || '').slice(0, 200);
+      const year = clamp(r.year, 1888, 2100);
+      if (!title) { result.skipped++; continue; }
+      if (asLikes) {
+        const mid = await resolveMovie(title, year);
+        if (!mid) { skip(title); continue; }
+        try {
+          db.prepare('INSERT INTO likes (user_id, movie_id) VALUES (?, ?)').run(uid, mid);
+          result.favorites++;
+        } catch (e) { /* already a favorite */ }
+        continue;
+      }
+      // Letterboxd rates 0.5-5 in halves; our stars are 1-5 integers
+      const rating = parseFloat(r.rating);
+      if (!Number.isFinite(rating) || rating <= 0) { result.skipped++; continue; }
+      const mid = await resolveMovie(title, year);
+      if (!mid) { skip(title); continue; }
+      const stars = Math.min(5, Math.max(1, Math.round(rating)));
+      db.prepare(`
+        INSERT INTO reviews (user_id, movie_id, stars, text) VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, movie_id) DO UPDATE SET stars = excluded.stars,
+          text = CASE WHEN excluded.text != '' THEN excluded.text ELSE reviews.text END
+      `).run(uid, mid, stars, (r.review || '').slice(0, 2000));
+      result.reviews++;
+    }
+  }
+  res.json(result);
 });
 
 // ---- Movie search (external provider) ----

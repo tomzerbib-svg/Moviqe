@@ -74,6 +74,7 @@
           <div class="ig-row">
             <h2 id="profile-username"></h2>
             <button id="edit-profile-btn" class="ghost-btn">Edit profile</button>
+            <button id="import-btn" class="ghost-btn">Import from Letterboxd</button>
           </div>
           <div class="ig-stats">
             <span><strong id="stat-reviews">0</strong> reviews</span>
@@ -138,6 +139,29 @@
         </fieldset>
         <button type="submit" class="primary">Save profile</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Letterboxd import modal -->
+  <div id="import-modal" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close="import-modal">×</button>
+      <h3>Import from Letterboxd</h3>
+      <ol class="import-steps muted">
+        <li>On Letterboxd, open <strong>Settings → Data → Export your data</strong> and download the zip.</li>
+        <li>Unzip it on your device.</li>
+        <li>Pick the files below and hit Import.</li>
+      </ol>
+      <form id="import-form">
+        <label>Ratings &amp; reviews — <code>ratings.csv</code> and/or <code>reviews.csv</code>
+          <input type="file" id="lb-reviews" accept=".csv,text/csv" multiple>
+        </label>
+        <label>Favorites (optional) — <code>films.csv</code> from the <code>likes</code> folder
+          <input type="file" id="lb-likes" accept=".csv,text/csv">
+        </label>
+        <button type="submit" class="primary" id="lb-submit">Import</button>
+      </form>
+      <div id="import-result"></div>
     </div>
   </div>
 

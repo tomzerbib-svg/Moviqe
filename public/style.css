@@ -319,6 +319,12 @@ button.primary.small { padding: 0.45rem 0.9rem; font-size: 0.85rem; }
 .kind-option div { display: flex; flex-direction: column; }
 .kind-option input { accent-color: var(--accent); }
 
+/* Letterboxd import */
+.import-steps { padding-left: 1.2rem; font-size: 0.9rem; line-height: 1.5; }
+.import-steps code { background: var(--card); border-radius: 4px; padding: 0.05rem 0.35rem; }
+#import-form input[type="file"] { padding: 0.5rem; font-size: 0.85rem; }
+#import-result { margin-top: 0.8rem; }
+
 /* Edit profile */
 .pfp-row { display: flex; align-items: center; gap: 1rem; }
 .pfp-btn { display: inline-flex; align-items: center; }
