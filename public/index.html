@@ -37,8 +37,11 @@
         <button id="show-register">Sign up</button>
       </div>
       <form id="auth-form">
-        <input type="text" id="auth-username" placeholder="Username" autocomplete="username" required>
+        <input type="text" id="auth-username" placeholder="Username or email" autocomplete="username" required>
+        <input type="email" id="auth-email" placeholder="Email" autocomplete="email" class="hidden">
         <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" required>
+        <input type="password" id="auth-password2" placeholder="Confirm password" autocomplete="new-password" class="hidden">
+        <p id="auth-hint" class="muted hidden">At least 8 characters, with a letter and a number.</p>
         <p id="auth-error" class="error hidden"></p>
         <button type="submit" class="primary" id="auth-submit">Log in</button>
       </form>

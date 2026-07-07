@@ -548,23 +548,43 @@ $('#show-login').addEventListener('click', () => setAuthMode('login'));
 $('#show-register').addEventListener('click', () => setAuthMode('register'));
 function setAuthMode(mode) {
   authMode = mode;
-  $('#show-login').classList.toggle('active', mode === 'login');
-  $('#show-register').classList.toggle('active', mode === 'register');
-  $('#auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
+  const reg = mode === 'register';
+  $('#show-login').classList.toggle('active', !reg);
+  $('#show-register').classList.toggle('active', reg);
+  $('#auth-submit').textContent = reg ? 'Create account' : 'Log in';
+  $('#auth-email').classList.toggle('hidden', !reg);
+  $('#auth-password2').classList.toggle('hidden', !reg);
+  $('#auth-hint').classList.toggle('hidden', !reg);
+  $('#auth-email').required = reg;
+  $('#auth-password2').required = reg;
+  $('#auth-username').placeholder = reg ? 'Username' : 'Username or email';
+  $('#auth-password').autocomplete = reg ? 'new-password' : 'current-password';
   $('#auth-error').classList.add('hidden');
+}
+
+function authError(msg) {
+  $('#auth-error').textContent = msg;
+  $('#auth-error').classList.remove('hidden');
 }
 
 $('#auth-form').addEventListener('submit', async e => {
   e.preventDefault();
+  const password = $('#auth-password').value;
+  const body = { username: $('#auth-username').value.trim(), password };
+  if (authMode === 'register') {
+    if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      return authError('Password must be at least 8 characters, with a letter and a number');
+    }
+    if (password !== $('#auth-password2').value) {
+      return authError('Passwords do not match');
+    }
+    body.email = $('#auth-email').value.trim();
+  }
   try {
-    me = await api('/api/' + authMode, {
-      method: 'POST',
-      body: { username: $('#auth-username').value.trim(), password: $('#auth-password').value }
-    });
+    me = await api('/api/' + authMode, { method: 'POST', body });
     showApp();
   } catch (err) {
-    $('#auth-error').textContent = err.message;
-    $('#auth-error').classList.remove('hidden');
+    authError(err.message);
   }
 });
 

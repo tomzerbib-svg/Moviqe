@@ -3,5 +3,6 @@ moviqe.db
 moviqe.db-shm
 moviqe.db-wal
 .env
+.secret
 .DS_Store
 public/uploads/

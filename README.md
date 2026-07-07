@@ -25,6 +25,19 @@ npm start
 - **Export to social media:** the button exists in the My Reviews tab. Implement it in `exportReview(reviewId)` in `public/app.js` (marked with `TODO(export)`).
 - **Session secret:** in production set the `SESSION_SECRET` environment variable to a long random string.
 
+## Security
+
+- Registration requires a unique email and a password of 8+ characters with a letter and a number; login works with username or email. Passwords are bcrypt-hashed.
+- Sessions: signed httpOnly cookies, `sameSite=lax`, `secure` in production. The secret comes from `SESSION_SECRET`, or a random one auto-generated into the gitignored `.secret` file.
+- Rate limiting: 20 login/register attempts and 1000 API requests per IP per 15 minutes (in-memory — resets on restart).
+- Login compares against a dummy hash when the account doesn't exist, so timing doesn't reveal which usernames are real.
+- Security headers on every response: CSP, nosniff, frame denial, referrer and permissions policies. Mutating requests from a different origin are rejected.
+- Avatar uploads are checked against real PNG/JPEG/WebP magic bytes, capped at 3MB; all other JSON bodies capped at 100KB.
+- External URLs stored in the db pass a strict allowlist so they can't escape the CSS/HTML they're rendered into.
+- Errors return generic JSON — no stack traces.
+
+Before going live: set `NODE_ENV=production` and a strong `SESSION_SECRET` on the host.
+
 ## Deploying
 
 See the deployment section in the chat, short version:

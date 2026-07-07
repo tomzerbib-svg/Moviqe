@@ -1,7 +1,7 @@
 // Minimal service worker: makes Moviqe installable as an app and serves the
 // static shell from cache. API calls always hit the network.
 // Bump the version when deploying changes to static files.
-const CACHE = 'moviqe-v1';
+const CACHE = 'moviqe-v2';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/logo.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', e => {

@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const cookieSession = require('cookie-session');
@@ -16,6 +17,18 @@ try {
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;      // short "API Key" — sent as query param
 const TMDB_TOKEN = process.env.TMDB_TOKEN;      // long "API Read Access Token" — sent as bearer header
+
+// Session secret: env var wins. Otherwise generate a random one and keep it in
+// a gitignored file, so cookies survive restarts and no guessable default
+// ever ships to production.
+let SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  const secretFile = path.join(__dirname, '.secret');
+  if (!fs.existsSync(secretFile)) {
+    fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+  }
+  SESSION_SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+}
 const db = new Database(path.join(__dirname, 'moviqe.db'));
 db.pragma('journal_mode = WAL');
 
@@ -70,6 +83,8 @@ CREATE TABLE IF NOT EXISTS list_items (
 
 const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
 if (!userCols.includes('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT');
+if (!userCols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL');
 
 const movieCols = db.prepare('PRAGMA table_info(movies)').all().map(c => c.name);
 [
@@ -233,13 +248,66 @@ const uploadsDir = path.join(__dirname, 'public', 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
 
 const app = express();
-app.use(express.json({ limit: '4mb' })); // roomy enough for base64 avatar uploads
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // Railway/Render terminate TLS at a proxy
+
+// Security headers on every response
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+  });
+  next();
+});
+
+// CSRF backstop on top of sameSite cookies: mutating requests must come from
+// our own origin (browsers always send Origin on cross-site requests)
+app.use((req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin) {
+    let originHost = null;
+    try { originHost = new URL(req.headers.origin).host; } catch (e) { /* malformed */ }
+    if (originHost !== req.headers.host) {
+      return res.status(403).json({ error: 'Cross-origin request blocked' });
+    }
+  }
+  next();
+});
+
+// Simple in-memory rate limiter (per IP)
+function rateLimit(windowMs, max) {
+  const hits = new Map();
+  return (req, res, next) => {
+    const now = Date.now();
+    if (hits.size > 10000) {
+      for (const [k, v] of hits) if (now - v.start > windowMs) hits.delete(k);
+    }
+    const rec = hits.get(req.ip) || { count: 0, start: now };
+    if (now - rec.start > windowMs) { rec.count = 0; rec.start = now; }
+    rec.count++;
+    hits.set(req.ip, rec);
+    if (rec.count > max) return res.status(429).json({ error: 'Too many requests — try again in a few minutes' });
+    next();
+  };
+}
+const authLimiter = rateLimit(15 * 60 * 1000, 20);   // login/register attempts
+const apiLimiter = rateLimit(15 * 60 * 1000, 1000);  // everything else
+app.use('/api/', apiLimiter);
+
+// Small JSON bodies everywhere except the avatar upload
+const smallJson = express.json({ limit: '100kb' });
+const bigJson = express.json({ limit: '4mb' });
+app.use((req, res, next) => (req.path === '/api/profile/avatar' ? bigJson : smallJson)(req, res, next));
+
 app.use(cookieSession({
   name: 'moviqe',
-  secret: process.env.SESSION_SECRET || 'dev-secret-change-me-in-production',
+  secret: SESSION_SECRET,
   maxAge: 30 * 24 * 60 * 60 * 1000,
   httpOnly: true,
-  sameSite: 'lax'
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
 }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -249,40 +317,61 @@ function requireAuth(req, res, next) {
 }
 
 const publicUser = u => ({
-  id: u.id, username: u.username, bio: u.bio,
+  id: u.id, username: u.username, email: u.email || null, bio: u.bio,
   bg_color: u.bg_color, accent_color: u.accent_color, avatar_color: u.avatar_color,
   avatar_url: u.avatar_url || null,
   created_at: u.created_at
 });
 
-const httpsUrl = v => (typeof v === 'string' && /^https:\/\/\S+$/.test(v)) ? v.slice(0, 500) : null;
+// Strict allowlist: rejects quotes, parens, spaces and angle brackets so a
+// stored URL can never break out of the CSS url('...') it lands in.
+const httpsUrl = v => (typeof v === 'string' && v.length <= 500
+  && /^https:\/\/[A-Za-z0-9.-]+(?::\d{2,5})?(?:\/[A-Za-z0-9\-._~!$&+,;=:@%/?]*)?$/.test(v)) ? v : null;
+
+// Compared against when the account doesn't exist, so a login attempt takes
+// the same time either way (no username probing via response timing)
+const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
 
 // ---- Auth ----
-app.post('/api/register', (req, res) => {
-  const { username, password } = req.body || {};
+function passwordProblem(password) {
+  if (!password || password.length < 8) return 'Password must be at least 8 characters';
+  if (password.length > 128) return 'Password too long (max 128 characters)';
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'Password must contain at least one letter and one number';
+  return null;
+}
+
+app.post('/api/register', authLimiter, (req, res) => {
+  const { username, email, password } = req.body || {};
   if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     return res.status(400).json({ error: 'Username must be 3-20 characters (letters, numbers, _)' });
   }
-  if (!password || password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  const mail = String(email || '').trim().toLowerCase();
+  if (!mail || mail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(mail)) {
+    return res.status(400).json({ error: 'Enter a valid email address' });
   }
-  try {
-    const info = db.prepare(`
-      INSERT INTO users (username, password_hash, bg_color, accent_color, avatar_color)
-      VALUES (?, ?, '#12121a', '#f4c245', '#3d6be8')
-    `).run(username, bcrypt.hashSync(password, 10));
-    req.session.userId = info.lastInsertRowid;
-    res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
-  } catch (e) {
-    res.status(409).json({ error: 'Username already taken' });
+  const pwErr = passwordProblem(password);
+  if (pwErr) return res.status(400).json({ error: pwErr });
+  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+    return res.status(409).json({ error: 'Username already taken' });
   }
+  if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail)) {
+    return res.status(409).json({ error: 'An account with that email already exists' });
+  }
+  const info = db.prepare(`
+    INSERT INTO users (username, email, password_hash, bg_color, accent_color, avatar_color)
+    VALUES (?, ?, ?, '#12121a', '#f4c245', '#3d6be8')
+  `).run(username, mail, bcrypt.hashSync(password, 10));
+  req.session.userId = info.lastInsertRowid;
+  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', authLimiter, (req, res) => {
   const { username, password } = req.body || {};
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username || '');
-  if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
-    return res.status(401).json({ error: 'Wrong username or password' });
+  const id = String(username || '').trim();
+  const user = db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(id, id.toLowerCase());
+  const ok = bcrypt.compareSync(String(password || ''), user ? user.password_hash : DUMMY_HASH);
+  if (!user || !ok) {
+    return res.status(401).json({ error: 'Wrong username/email or password' });
   }
   req.session.userId = user.id;
   res.json(publicUser(user));
@@ -314,12 +403,23 @@ app.put('/api/profile', requireAuth, (req, res) => {
   res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId)));
 });
 
+// The declared image type must match the actual file bytes — a renamed
+// executable or HTML file gets rejected even with a valid-looking data URL
+function looksLikeImage(type, buf) {
+  if (buf.length < 12) return false;
+  if (type === 'png') return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  if (type === 'jpeg') return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  if (type === 'webp') return buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP';
+  return false;
+}
+
 // Profile picture upload: JSON body { image: "data:image/png;base64,..." }
 app.post('/api/profile/avatar', requireAuth, (req, res) => {
   const m = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec((req.body || {}).image || '');
   if (!m) return res.status(400).json({ error: 'Send a PNG, JPEG or WebP image' });
   const buf = Buffer.from(m[2], 'base64');
   if (buf.length > 3 * 1024 * 1024) return res.status(400).json({ error: 'Image too large (max 3MB)' });
+  if (!looksLikeImage(m[1], buf)) return res.status(400).json({ error: 'File does not look like a valid image' });
   const old = db.prepare('SELECT avatar_url FROM users WHERE id = ?').get(req.session.userId).avatar_url;
   const file = `av_${req.session.userId}_${Date.now()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`;
   fs.writeFileSync(path.join(uploadsDir, file), buf);
@@ -606,6 +706,13 @@ app.get('/api/my-reviews', requireAuth, (req, res) => {
     FROM reviews r JOIN movies m ON m.id = r.movie_id
     WHERE r.user_id = ? ORDER BY r.created_at DESC
   `).all(req.session.userId));
+});
+
+// JSON errors only — no stack traces or HTML error pages leave the server
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
+  console.error(err.message);
+  res.status(err.status || 400).json({ error: 'Bad request' });
 });
 
 app.listen(PORT, () => console.log(`Moviqe running on http://localhost:${PORT}`));
